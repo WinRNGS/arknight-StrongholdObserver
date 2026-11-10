@@ -12,7 +12,9 @@ sealed class MainForm : Form
     readonly Catalog _catalog;
     readonly ObserverSession _session;
     readonly ObservationHistory _history;
+    readonly ColumnWidths _columnWidths;
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 550 };
+    readonly System.Windows.Forms.Timer _widthSaveTimer = new() { Interval = 350 };
     readonly Label _status = new(), _summary = new(), _effectDetail = new(), _foot = new(), _enemyInfo = new(), _allyInfo = new();
     readonly TableGrid _enemies = new(), _effects = new(), _allies = new();
     readonly ComboBox _matchChoice = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 305 };
@@ -22,12 +24,13 @@ sealed class MainForm : Form
     WaveRecord? _viewWave;
     bool _reading, _enabled, _closing, _changingPickers, _lastReadOk;
 
-    public MainForm(Catalog catalog, bool auto, ObservationHistory? history = null)
+    public MainForm(Catalog catalog, bool auto, ObservationHistory? history = null, ColumnWidths? columnWidths = null)
     {
         _catalog = catalog;
         _session = new ObserverSession(catalog);
         _history = history ?? new(Path.Combine(AppContext.BaseDirectory, "记录", "history.json"));
-        Text = "卫戍协议 · 实时观察器 1.2.1";
+        _columnWidths = columnWidths ?? new(Path.Combine(AppContext.BaseDirectory, "记录", "列宽.json"));
+        Text = $"卫戍协议 · 实时观察器 {Application.ProductVersion.Split('+')[0]}";
         BackColor = Background;
         ForeColor = TextColor;
         Font = new Font("Microsoft YaHei UI", 10F);
@@ -36,28 +39,32 @@ sealed class MainForm : Form
         MinimumSize = new Size(790, 550);
         AutoScaleMode = AutoScaleMode.Dpi;
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 12), ColumnCount = 1, RowCount = 6 };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 47));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = Insets(16, 14, 16, 10), ColumnCount = 1, RowCount = 6 };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var i = 0; i < 4; i++) root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
 
-        var top = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 2 };
-        top.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
-        top.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var top = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Insets(0, 0, 0, 10), RowCount = 2, ColumnCount = 2 };
+        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        top.Controls.Add(Label("ARKNIGHTS   /   STRONGHOLD PROTOCOL   /   V3_1", Accent, 10F, FontStyle.Bold), 0, 0);
-        top.Controls.Add(Label("卫戍协议 · 实时观察器", TextColor, 24F, FontStyle.Bold), 0, 1);
+        var series = Label("ARKNIGHTS   /   STRONGHOLD PROTOCOL   /   V3_1", Accent, 10F, FontStyle.Bold);
+        series.Margin = Insets(0, 0, 0, 4);
+        top.Controls.Add(series, 0, 0);
+        var title = Label("卫戍协议 · 实时观察器", TextColor, 24F, FontStyle.Bold);
+        title.Margin = Padding.Empty;
+        top.Controls.Add(title, 0, 1);
         var badge = Label("独立只读工具", Accent, 10F, FontStyle.Bold);
         badge.Anchor = AnchorStyles.Right;
+        badge.Margin = Insets(12, 0, 0, 0);
         top.Controls.Add(badge, 1, 1);
         root.Controls.Add(top);
 
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 0, 0, 2) };
+        var buttons = FlowRow(10);
         _connect = Button("连接游戏", primary: true);
         _connect.Click += (_, _) => SetConnection(!_enabled);
         _admin = Button("以管理员权限重开");
@@ -69,7 +76,9 @@ sealed class MainForm : Form
         buttons.Controls.AddRange([_connect, _admin, _save]);
         root.Controls.Add(buttons);
 
-        var strip = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Surface, Padding = new Padding(12, 0, 12, 0), Margin = new Padding(0, 3, 0, 6) };
+        var strip = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2, RowCount = 1, BackColor = Surface, Padding = Insets(12, 5, 12, 5),
+            Margin = Insets(0, 0, 0, 10), MinimumSize = new Size(0, LogicalToDeviceUnits(36)) };
         strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
         strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
         StyleLabel(_status, Muted);
@@ -80,9 +89,15 @@ sealed class MainForm : Form
         strip.Controls.Add(_summary, 1, 0);
         root.Controls.Add(strip);
 
-        var picks = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 3, 0, 0) };
-        var matchLabel = Label("对局", Muted, 10F, FontStyle.Regular); matchLabel.Margin = new Padding(0, 6, 6, 0);
-        var waveLabel = Label("波次", Muted, 10F, FontStyle.Regular); waveLabel.Margin = new Padding(12, 6, 6, 0);
+        var picks = FlowRow(12);
+        // The native ComboBox can be a little taller than the flow layout's preferred size.
+        picks.MinimumSize = new Size(0, LogicalToDeviceUnits(28));
+        var matchLabel = Label("对局", Muted, 10F, FontStyle.Regular);
+        var waveLabel = Label("波次", Muted, 10F, FontStyle.Regular);
+        matchLabel.Margin = Insets(0, 0, 8, 0);
+        waveLabel.Margin = Insets(16, 0, 8, 0);
+        matchLabel.Anchor = waveLabel.Anchor = _matchChoice.Anchor = _waveChoice.Anchor = AnchorStyles.Left;
+        _matchChoice.Margin = _waveChoice.Margin = Padding.Empty;
         _matchChoice.AccessibleName = "选择实时或历史对局";
         _waveChoice.AccessibleName = "选择历史波次";
         picks.Controls.AddRange([matchLabel, _matchChoice, waveLabel, _waveChoice]);
@@ -90,31 +105,69 @@ sealed class MainForm : Form
         _matchChoice.SelectedIndexChanged += (_, _) => { if (!_changingPickers) { UpdateWavePicker(reset: true); RenderView(); } };
         _waveChoice.SelectedIndexChanged += (_, _) => { if (!_changingPickers) RenderView(); };
 
-        var pages = new TabControl { Dock = DockStyle.Fill, Padding = new Point(14, 6), Margin = new Padding(0, 2, 0, 0) };
-        var enemies = new TabPage("本波敌人") { BackColor = Surface, Padding = new Padding(8) };
-        var effects = new TabPage("回合强化") { BackColor = Surface, Padding = new Padding(8) };
-        var allies = new TabPage("我方战报") { BackColor = Surface, Padding = new Padding(8) };
+        var pages = new TabControl { Dock = DockStyle.Fill, Padding = new Point(14, 6), Margin = Padding.Empty };
+        var pageInset = Insets(8, 10, 8, 8);
+        var enemies = new TabPage("本波敌人") { BackColor = Surface, Padding = pageInset };
+        var effects = new TabPage("回合强化") { BackColor = Surface, Padding = pageInset };
+        var allies = new TabPage("我方战报") { BackColor = Surface, Padding = pageInset };
         pages.TabPages.AddRange([enemies, effects, allies]);
         root.Controls.Add(pages);
-        SetupGrid(_enemies, ("name", "敌人", 150), ("state", "状态", 128), ("hp", "最后生命", 98), ("maxHp", "最大生命", 98), ("attack", "攻击", 72), ("defense", "防御", 72), ("res", "法抗", 67), ("aspd", "攻速", 67), ("id", "敌人 ID", 155));
-        SetupGrid(_effects, ("name", "效果", 150), ("summary", "每份规则", 190), ("copies", "末次份数", 83), ("peak", "本波峰值", 83), ("rounds", "已见波数", 83), ("param", "原始参数", 95), ("id", "效果 ID", 160));
-        SetupGrid(_allies, ("name", "干员", 160), ("phase", "阶段", 92), ("damage", "累计输出", 110), ("dps", "阶段平均 DPS", 125), ("heal", "个人治疗", 105), ("seconds", "战斗秒数", 100), ("id", "干员 ID", 165));
+        SetupGrid(_enemies, ("name", "敌人"), ("state", "状态"), ("hp", "最后生命"), ("maxHp", "最大生命"), ("attack", "攻击"), ("defense", "防御"), ("res", "法抗"), ("aspd", "攻速"), ("id", "敌人 ID"));
+        SetupGrid(_effects, ("name", "效果"), ("summary", "每份规则"), ("copies", "末次份数"), ("peak", "本波峰值"), ("rounds", "已见波数"), ("param", "原始参数"), ("id", "效果 ID"));
+        SetupGrid(_allies, ("name", "干员"), ("phase", "阶段"), ("damage", "累计输出"), ("dps", "阶段平均 DPS"), ("heal", "个人治疗"), ("seconds", "战斗秒数"), ("id", "干员 ID"));
         AddGridPanel(enemies, _enemies, _enemyInfo, 70);
         AddGridPanel(effects, _effects, _effectDetail, 145);
         AddGridPanel(allies, _allies, _allyInfo, 75);
+        _enemies.ConfigureWidths(_columnWidths, "enemies", QueueColumnSave);
+        _effects.ConfigureWidths(_columnWidths, "effects", QueueColumnSave);
+        _allies.ConfigureWidths(_columnWidths, "allies", QueueColumnSave, nameWidth: 168);
         _enemyInfo.Text = "数值只来自已生成的敌人实例；尚未生成的敌人不会出现在本表。";
         _effectDetail.Text = "选择一项强化可查看其配置说明。此页读取卫戍当前回合的全局效果。";
         _effects.SelectionChanged += (_, _) => UpdateEffectDetail();
         _enemies.SelectionChanged += (_, _) => { UpdateEnemyDetail(); UpdateEffectDetail(); };
         StyleLabel(_foot, Muted);
+        _foot.MinimumSize = new Size(0, LogicalToDeviceUnits(22));
+        _foot.Margin = Insets(0, 6, 0, 0);
         _foot.Text = "自动保存最近 12 局 · 仅保存在工具的「记录」文件夹";
         root.Controls.Add(_foot);
 
         _timer.Tick += async (_, _) => await PollAsync();
-        FormClosed += (_, _) => { _closing = true; _timer.Stop(); _history.Save(force: true); _session.Dispose(); };
+        _widthSaveTimer.Tick += (_, _) => SaveColumnWidths();
+        FormClosed += (_, _) => { _closing = true; _timer.Stop(); SaveColumnWidths(); _history.Save(force: true); _session.Dispose(); };
+        Disposed += (_, _) => _widthSaveTimer.Dispose();
         RefreshPickers();
         RenderView();
         if (auto) Shown += (_, _) => SetConnection(true);
+    }
+
+    void QueueColumnSave()
+    {
+        _widthSaveTimer.Stop();
+        _widthSaveTimer.Start();
+    }
+
+    void SaveColumnWidths()
+    {
+        _widthSaveTimer.Stop();
+        if (!_columnWidths.Save()) _foot.Text = "列宽暂未保存，请确认程序目录可写。";
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        var workArea = Screen.FromControl(this).WorkingArea;
+        var edge = LogicalToDeviceUnits(24);
+        var availableWidth = workArea.Width - (Width - ClientSize.Width) - edge;
+        var availableHeight = workArea.Height - (Height - ClientSize.Height) - edge;
+        MinimumSize = new Size(Math.Min(workArea.Width, Math.Max(MinimumSize.Width, LogicalToDeviceUnits(520))),
+            Math.Min(workArea.Height, Math.Max(MinimumSize.Height, LogicalToDeviceUnits(430))));
+        ClientSize = new Size(Math.Min(LogicalToDeviceUnits(1280), Math.Max(availableWidth, 1)),
+            Math.Min(LogicalToDeviceUnits(650), Math.Max(availableHeight, 1)));
+        if (StartPosition == FormStartPosition.CenterScreen)
+        {
+            Left = workArea.Left + Math.Max(0, (workArea.Width - Width) / 2);
+            Top = workArea.Top + Math.Max(0, (workArea.Height - Height) / 2);
+        }
+        base.OnLoad(e);
     }
 
     void SetConnection(bool enabled)
@@ -163,6 +216,7 @@ sealed class MainForm : Form
     {
         try
         {
+            SaveColumnWidths();
             var path = Environment.ProcessPath ?? throw new InvalidOperationException("找不到观察器启动文件。");
             if (Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
                 path = Path.Combine(AppContext.BaseDirectory, "StrongholdObserver.exe");
@@ -283,6 +337,7 @@ sealed class MainForm : Form
         var historical = (_matchChoice.SelectedItem as MatchChoice)?.Id != null;
         var round = historical ? (_waveChoice.SelectedItem as WaveChoice)?.Round : match?.LastRound;
         var wave = round is { } r ? match?.Waves.GetValueOrDefault(r) : null;
+        var changedWave = !ReferenceEquals(_viewWave, wave);
         _viewMatch = match;
         _viewWave = wave;
         _save.Enabled = wave != null;
@@ -291,14 +346,14 @@ sealed class MainForm : Form
 
         var mode = historical ? "历史" : _lastReadOk && !match.SawEnd ? "实时" : "留存";
         _summary.Text = $"{mode} · {match.Mode} · 第 {wave.Round} 波" + (wave.Phase == null ? "" : $" · {wave.Phase}");
-        ReplaceRows(_enemies, wave.Enemies.Select(kv =>
+        ReplaceRows(_enemies, changedWave, wave.Enemies.Select(kv =>
         {
             var x = kv.Value; var e = x.Enemy;
             var state = x.Enemy.Hp == 0 ? x.Status : mode == "历史" || !_lastReadOk ? (x.Present ? "最后记录" : x.Status) : x.Status;
             return (kv.Key, new object?[] { e.Name, state, e.Hp, e.MaxHp, e.Attack, e.Defense, e.Resistance, e.AttackSpeed, e.Id });
         }));
         var effectIds = wave.Effects.Select(x => x.Id).Concat(wave.EffectFrames.SelectMany(f => f.Effects.Select(x => x.Id))).Distinct().ToArray();
-        ReplaceRows(_effects, effectIds.Select(id =>
+        ReplaceRows(_effects, changedWave, effectIds.Select(id =>
         {
             var current = wave.Effects.Where(e => e.Id == id).Select(e => e.Param).ToArray();
             var latestNonEmpty = wave.EffectFrames.LastOrDefault(f => f.Effects.Any(e => e.Id == id));
@@ -308,7 +363,7 @@ sealed class MainForm : Form
             var info = _catalog.Effects.GetValueOrDefault(id);
             return (id, new object?[] { info?.Name ?? id, info == null ? null : Display.Describe(info.Rules), current.Length, peak, rounds, string.Join(", ", parameters), id });
         }));
-        ReplaceRows(_allies, wave.AllySegments.SelectMany(seg => seg.Value.Allies.Select(kv =>
+        ReplaceRows(_allies, changedWave, wave.AllySegments.SelectMany(seg => seg.Value.Allies.Select(kv =>
         {
             var a = kv.Value;
             var s = seg.Value.CombatSeconds;
@@ -323,10 +378,20 @@ sealed class MainForm : Form
     sealed record MatchChoice(Guid? Id, string Text) { public override string ToString() => Text; }
     sealed record WaveChoice(int Round) { public override string ToString() => $"第 {Round} 波"; }
 
-    static Button Button(string text, bool primary = false)
+    Padding Insets(int left, int top, int right, int bottom) => new(
+        LogicalToDeviceUnits(left), LogicalToDeviceUnits(top), LogicalToDeviceUnits(right), LogicalToDeviceUnits(bottom));
+
+    FlowLayoutPanel FlowRow(int bottomGap) => new()
     {
-        var b = new Button { Text = text, AutoSize = true, FlatStyle = FlatStyle.Flat, ForeColor = primary ? Background : TextColor,
-            BackColor = primary ? Accent : Raised, Padding = new Padding(12, 2, 12, 2), Margin = new Padding(0, 0, 9, 0), Height = 34 };
+        Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        WrapContents = false, Margin = Insets(0, 0, 0, bottomGap),
+    };
+
+    Button Button(string text, bool primary = false)
+    {
+        var b = new Button { Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlatStyle = FlatStyle.Flat,
+            ForeColor = primary ? Background : TextColor, BackColor = primary ? Accent : Raised, Padding = Insets(12, 3, 12, 3),
+            Margin = Insets(0, 0, 9, 0), MinimumSize = new Size(0, LogicalToDeviceUnits(34)) };
         b.FlatAppearance.BorderColor = primary ? Accent : Edge;
         return b;
     }
@@ -344,15 +409,16 @@ sealed class MainForm : Form
         tab.Controls.Add(layout);
     }
 
-    static void SetupGrid(TableGrid grid, params (string Id, string Title, int Width)[] cols)
+    static void SetupGrid(TableGrid grid, params (string Id, string Title)[] cols)
     {
         grid.Dock = DockStyle.Fill;
         grid.BackgroundColor = Surface;
         grid.GridColor = Edge;
         grid.BorderStyle = BorderStyle.None;
         grid.EnableHeadersVisualStyles = false;
-        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Raised, ForeColor = TextColor, SelectionBackColor = Raised, SelectionForeColor = TextColor };
-        grid.DefaultCellStyle = new DataGridViewCellStyle { BackColor = Surface, ForeColor = TextColor, SelectionBackColor = Color.FromArgb(41, 72, 68), SelectionForeColor = TextColor, NullValue = "—" };
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Raised, ForeColor = TextColor, SelectionBackColor = Raised, SelectionForeColor = TextColor, WrapMode = DataGridViewTriState.False };
+        grid.DefaultCellStyle = new DataGridViewCellStyle { BackColor = Surface, ForeColor = TextColor, SelectionBackColor = Color.FromArgb(41, 72, 68), SelectionForeColor = TextColor, NullValue = "—", WrapMode = DataGridViewTriState.False };
+        grid.ScrollBars = ScrollBars.Both;
         grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(27, 36, 40);
         grid.AllowUserToAddRows = false;
         grid.AllowUserToDeleteRows = false;
@@ -366,16 +432,15 @@ sealed class MainForm : Form
         foreach (var c in cols)
         {
             var numeric = TableGrid.IsNumeric(c.Id);
-            var column = new DataGridViewTextBoxColumn { Name = c.Id, HeaderText = c.Title, Width = c.Width, SortMode = DataGridViewColumnSortMode.Programmatic };
+            var column = new DataGridViewTextBoxColumn { Name = c.Id, HeaderText = c.Title, AutoSizeMode = DataGridViewAutoSizeColumnMode.None, SortMode = DataGridViewColumnSortMode.Programmatic };
             if (numeric) { column.DefaultCellStyle.Format = "#,0.##"; column.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight; }
             grid.Columns.Add(column);
         }
-        grid.Columns[0].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        grid.Columns[0].MinimumWidth = cols[0].Width;
     }
 
-    static void ReplaceRows(TableGrid grid, IEnumerable<(string Key, object?[] Cells)> items)
+    static void ReplaceRows(TableGrid grid, bool resetWidths, IEnumerable<(string Key, object?[] Cells)> items)
     {
+        if (resetWidths) grid.MeasureHeaders();
         var data = items.ToArray();
         var wanted = data.Select(x => x.Key).ToHashSet();
         var resort = false;
@@ -384,13 +449,27 @@ sealed class MainForm : Form
         var old = grid.Rows.Cast<DataGridViewRow>().Where(r => r.Tag is string).ToDictionary(r => (string)r.Tag!);
         foreach (var (key, cells) in data)
         {
-            if (!old.TryGetValue(key, out var row)) { grid.Rows[grid.Rows.Add(cells)].Tag = key; resort = true; continue; }
-            for (var i = 0; i < cells.Length; i++) if (!Equals(row.Cells[i].Value, cells[i]))
+            if (!old.TryGetValue(key, out var row))
             {
-                row.Cells[i].Value = cells[i];
-                if (i == grid.SortIndex) resort = true;
+                row = grid.Rows[grid.Rows.Add(cells)];
+                row.Tag = key;
+                foreach (DataGridViewCell cell in row.Cells) grid.MeasureCell(cell);
+                resort = true;
+                continue;
+            }
+            for (var i = 0; i < cells.Length; i++)
+            {
+                var cell = row.Cells[i];
+                var changed = !Equals(cell.Value, cells[i]);
+                if (changed)
+                {
+                    cell.Value = cells[i];
+                    if (i == grid.SortIndex) resort = true;
+                }
+                if (changed || resetWidths) grid.MeasureCell(cell);
             }
         }
+        grid.ApplyWidths();
         if (resort) grid.ApplySort();
     }
 
@@ -398,7 +477,67 @@ sealed class MainForm : Form
     {
         public int SortIndex { get; private set; } = -1;
         bool _descending;
+        bool _applyingWidths;
+        ColumnWidths? _savedWidths;
+        Action? _widthChanged;
+        string[] _widthKeys = [];
+        int[] _naturalWidths = [];
+        int _nameWidth, _extraWidth;
         public TableGrid() => DoubleBuffered = true;
+
+        public void ConfigureWidths(ColumnWidths saved, string table, Action changed, int nameWidth = 0)
+        {
+            _savedWidths = saved;
+            _widthChanged = changed;
+            _nameWidth = nameWidth;
+            _widthKeys = Columns.Cast<DataGridViewColumn>().Select(c => $"{table}:{c.Name}").ToArray();
+            _naturalWidths = new int[Columns.Count];
+            MeasureHeaders();
+            ApplyWidths();
+        }
+
+        public void MeasureHeaders()
+        {
+            _extraWidth = TextRenderer.MeasureText("宽宽宽", Font, Size.Empty,
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
+            for (var i = 0; i < Columns.Count; i++)
+            {
+                var width = Columns[i].GetPreferredWidth(DataGridViewAutoSizeColumnMode.ColumnHeader, fixedHeight: true) + _extraWidth;
+                _naturalWidths[i] = i == 0 ? Math.Max(width, LogicalToDeviceUnits(_nameWidth)) : width;
+            }
+        }
+
+        public void MeasureCell(DataGridViewCell cell)
+        {
+            var i = cell.ColumnIndex;
+            if (!_savedWidths!.TryGet(_widthKeys[i], DeviceDpi, out _))
+                _naturalWidths[i] = Math.Max(_naturalWidths[i], cell.PreferredSize.Width + _extraWidth);
+        }
+
+        public void ApplyWidths()
+        {
+            _applyingWidths = true;
+            try
+            {
+                foreach (DataGridViewColumn column in Columns)
+                {
+                    var i = column.Index;
+                    var width = _savedWidths!.TryGet(_widthKeys[i], DeviceDpi, out var saved) ? saved : _naturalWidths[i];
+                    width = Math.Clamp(width, column.MinimumWidth, 65536);
+                    if (column.Width != width) column.Width = width;
+                }
+            }
+            finally { _applyingWidths = false; }
+        }
+
+        protected override void OnColumnWidthChanged(DataGridViewColumnEventArgs e)
+        {
+            base.OnColumnWidthChanged(e);
+            if (_applyingWidths || _savedWidths == null || Disposing || IsDisposed || e.Column.Index < 0 || e.Column.Index >= _widthKeys.Length) return;
+            _savedWidths.Set(_widthKeys[e.Column.Index], e.Column.Width, DeviceDpi);
+            _widthChanged?.Invoke();
+        }
+
         public static bool IsNumeric(string key) => key is "hp" or "maxHp" or "attack" or "defense" or "res" or "aspd" or "copies" or "peak" or "rounds" or "damage" or "dps" or "heal" or "seconds";
         protected override void OnColumnHeaderMouseClick(DataGridViewCellMouseEventArgs e)
         {
