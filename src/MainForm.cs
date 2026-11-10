@@ -115,9 +115,9 @@ sealed class MainForm : Form
         SetupGrid(_enemies, ("name", "敌人"), ("state", "状态"), ("hp", "最后生命"), ("maxHp", "最大生命"), ("attack", "攻击"), ("defense", "防御"), ("res", "法抗"), ("aspd", "攻速"), ("id", "敌人 ID"));
         SetupGrid(_effects, ("name", "效果"), ("summary", "每份规则"), ("copies", "末次份数"), ("peak", "本波峰值"), ("rounds", "已见波数"), ("param", "原始参数"), ("id", "效果 ID"));
         SetupGrid(_allies, ("name", "干员"), ("phase", "阶段"), ("damage", "累计输出"), ("dps", "阶段平均 DPS"), ("heal", "个人治疗"), ("seconds", "战斗秒数"), ("id", "干员 ID"));
-        AddGridPanel(enemies, _enemies, _enemyInfo, 70);
-        AddGridPanel(effects, _effects, _effectDetail, 145);
-        AddGridPanel(allies, _allies, _allyInfo, 75);
+        AddGridPanel(enemies, _enemies, _enemyInfo);
+        AddGridPanel(effects, _effects, _effectDetail);
+        AddGridPanel(allies, _allies, _allyInfo);
         _enemies.ConfigureWidths(_columnWidths, "enemies", QueueColumnSave);
         _effects.ConfigureWidths(_columnWidths, "effects", QueueColumnSave);
         _allies.ConfigureWidths(_columnWidths, "allies", QueueColumnSave, nameWidth: 168);
@@ -398,15 +398,58 @@ sealed class MainForm : Form
 
     static Label Label(string text, Color color, float size, FontStyle style) => new() { Text = text, AutoSize = true, ForeColor = color, Font = new Font("Microsoft YaHei UI", size, style) };
     static void StyleLabel(Label label, Color color) { label.Dock = DockStyle.Fill; label.ForeColor = color; label.TextAlign = ContentAlignment.MiddleLeft; label.AutoEllipsis = true; }
-    static void AddGridPanel(TabPage tab, TableGrid grid, Label detail, int height)
+    void AddGridPanel(TabPage tab, TableGrid grid, Label detail)
     {
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = Surface };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var detailRow = new RowStyle(SizeType.Absolute, 0);
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        layout.RowStyles.Add(detailRow);
         layout.Controls.Add(grid, 0, 0);
-        StyleLabel(detail, Muted);
-        layout.Controls.Add(detail, 0, 1);
+        var pane = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, AutoScroll = true, AccessibleName = $"{tab.Text}详情" };
+        detail.ForeColor = Muted;
+        detail.UseMnemonic = false;
+        pane.Controls.Add(detail);
+        layout.Controls.Add(pane, 0, 1);
         tab.Controls.Add(layout);
+
+        bool fitting = false;
+        void FitDetail()
+        {
+            if (fitting || layout.ClientSize.Width == 0 || layout.ClientSize.Height == 0) return;
+            fitting = true;
+            try
+            {
+                var inset = Insets(3, 8, 3, 8);
+                // Let the description grow without taking over the table in a short window.
+                var limit = Math.Max(1, layout.ClientSize.Height * 2 / 5);
+                var width = Math.Max(1, layout.ClientSize.Width - inset.Horizontal);
+                int Measure(int w) => detail.GetPreferredSize(new Size(w, 0)).Height;
+                var height = detail.Text.Length == 0 ? 0 : Measure(width);
+                if (height > 0 && height + inset.Vertical > limit)
+                {
+                    width = Math.Max(1, width - SystemInformation.VerticalScrollBarWidth);
+                    height = Measure(width);
+                }
+                var contentHeight = height == 0 ? 0 : height + inset.Vertical;
+                var viewport = Math.Min(contentHeight, limit);
+                if (detailRow.Height == viewport && detail.Size == new Size(width, height)
+                    && pane.AutoScrollMinSize.Height == contentHeight) return;
+
+                var scroll = -pane.AutoScrollPosition.Y;
+                pane.AutoScrollPosition = Point.Empty;
+                detail.Bounds = new Rectangle(inset.Left, inset.Top, width, height);
+                pane.AutoScrollMinSize = new Size(0, contentHeight);
+                detailRow.Height = viewport;
+                pane.AutoScrollPosition = new Point(0, scroll);
+            }
+            finally { fitting = false; }
+        }
+
+        detail.TextChanged += (_, _) => FitDetail();
+        detail.FontChanged += (_, _) => FitDetail();
+        layout.ClientSizeChanged += (_, _) => FitDetail();
+        FitDetail();
     }
 
     static void SetupGrid(TableGrid grid, params (string Id, string Title)[] cols)
