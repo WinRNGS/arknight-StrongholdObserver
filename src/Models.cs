@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace StrongholdObserver;
 
-sealed record Catalog(string Version, string Sha256, Dictionary<string, string> EnemyNames,
+sealed record Catalog(string Version, Dictionary<string, string> EnemyNames,
     Dictionary<string, EffectCatalog> Effects, Dictionary<string, string> Modes,
     Dictionary<string, ModeInfo>? ModeInfo = null, Dictionary<string, EnemyBase>? EnemyBase = null,
     Dictionary<string, string>? AllyNames = null)

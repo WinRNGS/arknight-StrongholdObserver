@@ -1,4 +1,4 @@
-Third-party notices for StrongholdObserver 1.2.0
+Third-party notices for StrongholdObserver 1.2.1
 The following notices are from the Microsoft .NET 8.0.33 win-x64 runtime packages bundled with this release.
 
 ===== microsoft.netcore.app.runtime.win-x64 / LICENSE.TXT =====

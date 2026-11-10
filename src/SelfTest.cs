@@ -98,8 +98,12 @@ static class SelfTest
         m.Put(dc + LiveReader.Activity, m.S("other-activity"));
         try { reader.Read(); throw new InvalidDataException("Other activity was accepted"); }
         catch (NoSession) { }
+        m.Put(dc + LiveReader.Activity, m.S("act3autochess"));
+        m.Put(klass + LiveReader.ClassName, m.C("DifferentController"));
+        try { new LiveReader(m, module, catalog).Read(); throw new InvalidDataException("Incompatible battle controller was accepted"); }
+        catch (NoSession) { }
         CheckHistory(s, row);
-        Console.WriteLine("OK: read-only memory, fixed-point stats, confirmed zero HP, partial samples, wave retention, retained effects, next-match isolation, close/reopen and history file recovery.");
+        Console.WriteLine("OK: read-only memory, incompatible layouts and other activities rejected, fixed-point stats, confirmed zero HP, partial samples, wave retention, retained effects, next-match isolation, close/reopen and history file recovery.");
     }
 
     static void CheckHistory(Snapshot source, EnemyInstance row)

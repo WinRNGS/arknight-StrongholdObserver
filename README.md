@@ -1,6 +1,6 @@
 # 卫戍协议 · 实时观察器
 
-用于《明日方舟》PC B 服「卫戍协议·规程·序列 I」的独立 Windows 工具。它从正在运行的游戏进程读取战斗数据，无需在游戏里打开敌方情报或强化面板。
+用于《明日方舟》PC 客户端「卫戍协议·规程·序列 I」的独立 Windows 工具。它从正在运行的游戏进程读取战斗数据，无需在游戏里打开敌方情报或强化面板。官服和 B 服可以尝试使用同一份程序。
 
 **[直接下载 StrongholdObserver.exe（Windows x64）](https://github.com/WinRNGS/arknight-StrongholdObserver/releases/latest/download/StrongholdObserver.exe)** · [发布页和校验和](https://github.com/WinRNGS/arknight-StrongholdObserver/releases/latest)
 
@@ -27,7 +27,7 @@
 
 ### 兼容性与数据
 
-- 1.2.0 适配 PC B 服的指定构建。程序会核对 `GameAssembly.dll` 的 SHA-256；客户端更新且哈希不匹配时会停止读取。
+- 1.2.1 取消了游戏文件的固定哈希限制。程序仍需识别游戏的战斗对象、活动和回合数据；当前客户端须与观察器使用的战斗数据布局兼容。此前的 B 服版本已有实测，本次更新通过了离线样本测试，尚未在官服和 B 服分别复测。发布页的 SHA-256 只用于校验下载的观察器。
 - 观察器本身不联网，不需要登录或配置密钥。它只读游戏进程，不截屏、不注入、不修改游戏文件或内存。历史和导出均保存在本地；对外分享导出时请留意其中的对局时间和战斗数据。
 - 这是非官方工具。读取进程仍可能受游戏规则或反作弊机制限制。
 

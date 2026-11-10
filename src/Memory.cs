@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -62,23 +61,21 @@ sealed class ProcessMemory : IReadMemory, IDisposable
     readonly SafeProcessHandle _handle;
     public int Pid { get; }
     public ulong AssemblyBase { get; }
-    public string AssemblyPath { get; }
     public bool Running => GetExitCodeProcess(_handle, out var code) && code == 259;
     public string Identity { get; }
 
-    ProcessMemory(SafeProcessHandle handle, int pid, ulong baseAddress, string assemblyPath)
+    ProcessMemory(SafeProcessHandle handle, int pid, ulong baseAddress)
     {
         _handle = handle;
         Pid = pid;
         AssemblyBase = baseAddress;
-        AssemblyPath = assemblyPath;
         GetProcessTimes(handle, out var creation, out _, out _, out _);
         Identity = $"{pid:X}:{creation:X}";
     }
 
     public static bool Elevated => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
-    public static ProcessMemory Attach(string expectedSha)
+    public static ProcessMemory Attach()
     {
         var session = Process.GetCurrentProcess().SessionId;
         var found = Process.GetProcessesByName("Arknights");
@@ -86,12 +83,12 @@ sealed class ProcessMemory : IReadMemory, IDisposable
         {
             var target = found.FirstOrDefault(p => p.SessionId == session && !p.HasExited);
             if (target == null) throw new NoSession("没有检测到当前桌面的《明日方舟》PC 客户端。");
-            return Open(target.Id, expectedSha);
+            return Open(target.Id);
         }
         finally { foreach (var p in found) p.Dispose(); }
     }
 
-    public static ProcessMemory Open(int pid, string expectedSha)
+    public static ProcessMemory Open(int pid)
     {
         var handle = OpenProcess(VmRead | QueryLimited, false, pid);
         if (handle.IsInvalid)
@@ -114,11 +111,7 @@ sealed class ProcessMemory : IReadMemory, IDisposable
             for (var found = Module32First(snapshot, ref entry); found; found = Module32Next(snapshot, ref entry))
             {
                 if (!string.Equals(entry.Name, "GameAssembly.dll", StringComparison.OrdinalIgnoreCase)) continue;
-                using var file = File.Open(entry.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                var sha = Convert.ToHexString(SHA256.HashData(file));
-                if (!sha.Equals(expectedSha, StringComparison.OrdinalIgnoreCase))
-                    throw new NoSession("游戏程序已更新：这版观察器的字段布局与当前版本不同。");
-                var memory = new ProcessMemory(handle, pid, (ulong)entry.Base.ToInt64(), entry.Path);
+                var memory = new ProcessMemory(handle, pid, (ulong)entry.Base.ToInt64());
                 if (!memory.Read(memory.AssemblyBase, 2).AsSpan().SequenceEqual("MZ"u8))
                     throw new ReadFault("无法验证目标模块的内存映像。");
                 return memory;

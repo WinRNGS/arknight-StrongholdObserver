@@ -7,7 +7,7 @@ namespace StrongholdObserver;
 
 sealed class LiveReader(IReadMemory mem, ulong module, Catalog catalog, string processIdentity = "fixture")
 {
-    // V3_1 PC layout, bound by SHA-256 before use. All offsets are read-only.
+    // V3_1 PC layout. Validate runtime objects before sampling; all offsets are read-only.
     internal const ulong ControllerType = 0x8B0FC40;
     internal const ulong ObscuredLongType = 0x8B254B8;
     internal const ulong Parent = 0x58, StaticFields = 0xB8, ClassName = 0x10;
@@ -52,7 +52,7 @@ sealed class LiveReader(IReadMemory mem, ulong module, Catalog catalog, string p
     ulong Controller()
     {
         var klass = mem.Pointer(module + ControllerType, "战斗模块");
-        if (GetClassName(klass) != "BattleController") throw new NoSession("战斗场景尚未初始化。");
+        if (GetClassName(klass) != "BattleController") throw new NoSession("战斗场景尚未初始化，或当前客户端的战斗数据布局不兼容。");
         var singleton = mem.Pointer(klass + Parent, "战斗场景类");
         var fields = mem.Pointer(singleton + StaticFields, "战斗场景");
         var controller = mem.Pointer(fields, "战斗场景");
@@ -298,7 +298,7 @@ sealed class ObserverSession(Catalog catalog) : IDisposable
             if (_memory != null && !_memory.Running) Clear();
             if (_memory == null)
             {
-                _memory = ProcessMemory.Attach(catalog.Sha256);
+                _memory = ProcessMemory.Attach();
                 _reader = new LiveReader(_memory, _memory.AssemblyBase, catalog, _memory.Identity);
             }
             return _reader!.Read();

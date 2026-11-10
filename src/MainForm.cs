@@ -27,7 +27,7 @@ sealed class MainForm : Form
         _catalog = catalog;
         _session = new ObserverSession(catalog);
         _history = history ?? new(Path.Combine(AppContext.BaseDirectory, "记录", "history.json"));
-        Text = "卫戍协议 · 实时观察器 1.2";
+        Text = "卫戍协议 · 实时观察器 1.2.1";
         BackColor = Background;
         ForeColor = TextColor;
         Font = new Font("Microsoft YaHei UI", 10F);
@@ -149,7 +149,7 @@ sealed class MainForm : Form
             _lastReadOk = false;
             _history.Save();
             RenderView();
-            if (ex.Message.Contains("错误 5", StringComparison.Ordinal) || ex.Message.Contains("程序已更新", StringComparison.Ordinal))
+            if (ex.Message.Contains("错误 5", StringComparison.Ordinal))
             {
                 _enabled = false;
                 _timer.Stop();
