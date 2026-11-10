@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+**/publish/
+**/记录/
+history.json
+卫戍记录-*.json
+*.user
+*.suo
+*.pdb
+*.exe
+*.zip
+.env
+.env.*

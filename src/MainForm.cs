@@ -1,0 +1,433 @@
+using System.Diagnostics;
+using System.Collections;
+using System.Globalization;
+using System.Text.Json;
+
+namespace StrongholdObserver;
+
+sealed class MainForm : Form
+{
+    static readonly Color Background = Color.FromArgb(15, 21, 24), Surface = Color.FromArgb(23, 31, 35), Raised = Color.FromArgb(31, 43, 47),
+        Edge = Color.FromArgb(48, 63, 67), TextColor = Color.FromArgb(237, 241, 240), Muted = Color.FromArgb(166, 180, 180), Accent = Color.FromArgb(132, 231, 194), Warning = Color.FromArgb(255, 199, 125);
+    readonly Catalog _catalog;
+    readonly ObserverSession _session;
+    readonly ObservationHistory _history;
+    readonly System.Windows.Forms.Timer _timer = new() { Interval = 550 };
+    readonly Label _status = new(), _summary = new(), _effectDetail = new(), _foot = new(), _enemyInfo = new(), _allyInfo = new();
+    readonly TableGrid _enemies = new(), _effects = new(), _allies = new();
+    readonly ComboBox _matchChoice = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 305 };
+    readonly ComboBox _waveChoice = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 125, Enabled = false };
+    readonly Button _connect, _admin, _save;
+    MatchRecord? _viewMatch;
+    WaveRecord? _viewWave;
+    bool _reading, _enabled, _closing, _changingPickers, _lastReadOk;
+
+    public MainForm(Catalog catalog, bool auto, ObservationHistory? history = null)
+    {
+        _catalog = catalog;
+        _session = new ObserverSession(catalog);
+        _history = history ?? new(Path.Combine(AppContext.BaseDirectory, "记录", "history.json"));
+        Text = "卫戍协议 · 实时观察器 1.2";
+        BackColor = Background;
+        ForeColor = TextColor;
+        Font = new Font("Microsoft YaHei UI", 10F);
+        StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(1040, 650);
+        MinimumSize = new Size(790, 550);
+        AutoScaleMode = AutoScaleMode.Dpi;
+
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(22, 18, 22, 12), ColumnCount = 1, RowCount = 6 };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 47));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        Controls.Add(root);
+
+        var top = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 2 };
+        top.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+        top.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        top.Controls.Add(Label("ARKNIGHTS   /   STRONGHOLD PROTOCOL   /   V3_1", Accent, 10F, FontStyle.Bold), 0, 0);
+        top.Controls.Add(Label("卫戍协议 · 实时观察器", TextColor, 24F, FontStyle.Bold), 0, 1);
+        var badge = Label("独立只读工具", Accent, 10F, FontStyle.Bold);
+        badge.Anchor = AnchorStyles.Right;
+        top.Controls.Add(badge, 1, 1);
+        root.Controls.Add(top);
+
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 0, 0, 2) };
+        _connect = Button("连接游戏", primary: true);
+        _connect.Click += (_, _) => SetConnection(!_enabled);
+        _admin = Button("以管理员权限重开");
+        _admin.Enabled = !ProcessMemory.Elevated;
+        _admin.Click += (_, _) => ReopenElevated();
+        _save = Button("导出所选波次");
+        _save.Enabled = false;
+        _save.Click += (_, _) => Save();
+        buttons.Controls.AddRange([_connect, _admin, _save]);
+        root.Controls.Add(buttons);
+
+        var strip = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Surface, Padding = new Padding(12, 0, 12, 0), Margin = new Padding(0, 3, 0, 6) };
+        strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
+        strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+        StyleLabel(_status, Muted);
+        _status.Text = "未连接 · 请打开 PC 客户端并进入卫戍协议";
+        StyleLabel(_summary, Accent);
+        _summary.TextAlign = ContentAlignment.MiddleRight;
+        strip.Controls.Add(_status, 0, 0);
+        strip.Controls.Add(_summary, 1, 0);
+        root.Controls.Add(strip);
+
+        var picks = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 3, 0, 0) };
+        var matchLabel = Label("对局", Muted, 10F, FontStyle.Regular); matchLabel.Margin = new Padding(0, 6, 6, 0);
+        var waveLabel = Label("波次", Muted, 10F, FontStyle.Regular); waveLabel.Margin = new Padding(12, 6, 6, 0);
+        _matchChoice.AccessibleName = "选择实时或历史对局";
+        _waveChoice.AccessibleName = "选择历史波次";
+        picks.Controls.AddRange([matchLabel, _matchChoice, waveLabel, _waveChoice]);
+        root.Controls.Add(picks);
+        _matchChoice.SelectedIndexChanged += (_, _) => { if (!_changingPickers) { UpdateWavePicker(reset: true); RenderView(); } };
+        _waveChoice.SelectedIndexChanged += (_, _) => { if (!_changingPickers) RenderView(); };
+
+        var pages = new TabControl { Dock = DockStyle.Fill, Padding = new Point(14, 6), Margin = new Padding(0, 2, 0, 0) };
+        var enemies = new TabPage("本波敌人") { BackColor = Surface, Padding = new Padding(8) };
+        var effects = new TabPage("回合强化") { BackColor = Surface, Padding = new Padding(8) };
+        var allies = new TabPage("我方战报") { BackColor = Surface, Padding = new Padding(8) };
+        pages.TabPages.AddRange([enemies, effects, allies]);
+        root.Controls.Add(pages);
+        SetupGrid(_enemies, ("name", "敌人", 150), ("state", "状态", 128), ("hp", "最后生命", 98), ("maxHp", "最大生命", 98), ("attack", "攻击", 72), ("defense", "防御", 72), ("res", "法抗", 67), ("aspd", "攻速", 67), ("id", "敌人 ID", 155));
+        SetupGrid(_effects, ("name", "效果", 150), ("summary", "每份规则", 190), ("copies", "末次份数", 83), ("peak", "本波峰值", 83), ("rounds", "已见波数", 83), ("param", "原始参数", 95), ("id", "效果 ID", 160));
+        SetupGrid(_allies, ("name", "干员", 160), ("phase", "阶段", 92), ("damage", "累计输出", 110), ("dps", "阶段平均 DPS", 125), ("heal", "个人治疗", 105), ("seconds", "战斗秒数", 100), ("id", "干员 ID", 165));
+        AddGridPanel(enemies, _enemies, _enemyInfo, 70);
+        AddGridPanel(effects, _effects, _effectDetail, 145);
+        AddGridPanel(allies, _allies, _allyInfo, 75);
+        _enemyInfo.Text = "数值只来自已生成的敌人实例；尚未生成的敌人不会出现在本表。";
+        _effectDetail.Text = "选择一项强化可查看其配置说明。此页读取卫戍当前回合的全局效果。";
+        _effects.SelectionChanged += (_, _) => UpdateEffectDetail();
+        _enemies.SelectionChanged += (_, _) => { UpdateEnemyDetail(); UpdateEffectDetail(); };
+        StyleLabel(_foot, Muted);
+        _foot.Text = "自动保存最近 12 局 · 仅保存在工具的「记录」文件夹";
+        root.Controls.Add(_foot);
+
+        _timer.Tick += async (_, _) => await PollAsync();
+        FormClosed += (_, _) => { _closing = true; _timer.Stop(); _history.Save(force: true); _session.Dispose(); };
+        RefreshPickers();
+        RenderView();
+        if (auto) Shown += (_, _) => SetConnection(true);
+    }
+
+    void SetConnection(bool enabled)
+    {
+        _enabled = enabled;
+        _connect.Text = enabled ? "暂停读取" : "连接游戏";
+        if (enabled) { _status.Text = "正在连接…"; _timer.Start(); _ = PollAsync(); }
+        else { _timer.Stop(); _lastReadOk = false; _history.Save(force: true); _status.Text = "已暂停 · 记录仍可回看"; RenderView(); }
+    }
+
+    async Task PollAsync()
+    {
+        if (!_enabled || _reading || _closing) return;
+        _reading = true;
+        try
+        {
+            var sample = await Task.Run(_session.Sample);
+            if (_closing || !_enabled) return;
+            _lastReadOk = true;
+            var boundary = _history.Record(sample);
+            _history.Save(boundary);
+            _status.ForeColor = Accent;
+            _status.Text = sample.Phase == "结束" ? "对局已结束 · 本波数据已留存" : sample.EnemyNote == null && sample.EffectNote == null ? "已连接 · 正在读取当前对局" : "已连接 · 部分数据待游戏生成";
+            if (boundary || _matchChoice.Items.Count != _history.Matches.Count + 1) RefreshPickers();
+            RenderView();
+        }
+        catch (Exception ex) when (ex is NoSession or ReadFault or IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            if (_closing || !_enabled) return;
+            _status.ForeColor = Warning;
+            _status.Text = ex.Message;
+            _lastReadOk = false;
+            _history.Save();
+            RenderView();
+            if (ex.Message.Contains("错误 5", StringComparison.Ordinal) || ex.Message.Contains("程序已更新", StringComparison.Ordinal))
+            {
+                _enabled = false;
+                _timer.Stop();
+                _connect.Text = "连接游戏";
+            }
+        }
+        finally { _reading = false; }
+    }
+
+    void ReopenElevated()
+    {
+        try
+        {
+            var path = Environment.ProcessPath ?? throw new InvalidOperationException("找不到观察器启动文件。");
+            if (Path.GetFileNameWithoutExtension(path).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                path = Path.Combine(AppContext.BaseDirectory, "StrongholdObserver.exe");
+            Process.Start(new ProcessStartInfo(path, "--connect") { UseShellExecute = true, Verb = "runas", WorkingDirectory = AppContext.BaseDirectory });
+            Close();
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            _status.ForeColor = Warning;
+            _status.Text = "没有启动管理员实例。";
+        }
+    }
+
+    void Save()
+    {
+        if (_viewMatch is not { } m || _viewWave is not { } w) return;
+        var exported = new WaveExport(m.Version, w.ReadAt, m.ModeId, m.Mode, w.Round, w.Phase, m.Id, m.StartedAt, m.EndedAt,
+            w.EffectsReadAt, w.EffectsRetained, w.Enemies.Values.Select(x => x.Enemy).ToArray(), w.Effects.ToArray(),
+            w.Enemies.Values.Select(x => new EnemyExportState(x.Enemy.Instance, x.Enemy.Id, x.LastSeenAt, x.Status, x.RetainedAttributes)).ToArray(),
+            w.EffectFrames.ToArray(), w.AllySegments.Values.ToArray());
+        using var save = new SaveFileDialog { Filter = "JSON 快照 (*.json)|*.json", AddExtension = true, FileName = $"卫戍记录-第{w.Round}回合-{m.StartedAt:yyyyMMdd-HHmmss}.json" };
+        if (save.ShowDialog(this) != DialogResult.OK) return;
+        try { File.WriteAllText(save.FileName, JsonSerializer.Serialize(exported, JsonOptions.Options)); _foot.Text = $"已导出：{save.FileName}"; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { _foot.Text = "保存失败：" + e.Message; }
+    }
+
+    void UpdateEffectDetail()
+    {
+        if (_viewWave is not { } wave || _viewMatch is not { } match) { _effectDetail.Text = "还没有回合记录。"; return; }
+        var meta = _catalog.ModeInfo?.GetValueOrDefault(match.ModeId);
+        var intensity = meta != null ? $"{match.Mode} · 模拟强度 {meta.Intensity ?? "—"} · 卫戍认证 ×{meta.CreditFactor:0.##}。强度标记与认证倍率不作为额外敌人加成。" : match.Mode;
+        var prefix = intensity + $"\n本波末次列表：{wave.Effects.Count} 份、{wave.Effects.Select(e => e.Id).Distinct().Count()} 种。";
+        prefix += wave.EffectFrames.Count > 0 ? $" 本波有 {wave.EffectFrames.Count} 次不同于前一次的列表记录。" : " 旧版只保留了末次列表。";
+        if (wave.EffectsRetained) prefix += $" 留存于 {wave.EffectsReadAt:HH:mm:ss}。";
+        if (SelectedEnemy() is { } enemy)
+        {
+            var calc = Display.RuleMultipliers(wave.Effects, enemy.Id);
+            if (calc.Length > 0) prefix += $"\n{enemy.Name} · 名单规则每份算一次（含排除项检查）：{calc}。";
+        }
+        if (_effects.CurrentRow?.Tag is not string id)
+        {
+            _effectDetail.Text = prefix + "\n" + (wave.Effects.Count == 0 ? (wave.EffectNote ?? (wave.EffectsReadAt != null ? "已读取：该波未报告强化。" : "该波没有强化读取记录。")) : "选择一项强化可查看说明。");
+            return;
+        }
+        var metaEffect = _catalog.Effects.GetValueOrDefault(id);
+        var latest = wave.Effects.Count(x => x.Id == id);
+        var frames = wave.EffectFrames.Where(f => f.Effects.Any(x => x.Id == id)).ToArray();
+        var peak = Math.Max(latest, frames.Select(f => f.Effects.Count(x => x.Id == id)).DefaultIfEmpty().Max());
+        var shape = peak > 1 ? $"观察到同一帧最多 {peak} 份" : "记录中每帧最多一份";
+        var seen = frames.Length > 0 ? $"；本波首次 {frames[0].At:HH:mm:ss}" : "";
+        var prior = match.Waves.Values.LastOrDefault(w => w.Round < wave.Round && w.EffectsReadAt != null);
+        var change = prior == null ? "" : $"；第 {prior.Round} 波末次 {prior.Effects.Count(x => x.Id == id)} 份 → 本波末次 {latest} 份";
+        _effectDetail.Text = prefix + $"\n{metaEffect?.Name ?? id}：{shape}{seen}{change}。参数不是层数或百分比。\n{metaEffect?.Desc}";
+    }
+
+    EnemyInstance? SelectedEnemy() => _enemies.CurrentRow?.Tag is string key && _viewWave != null && _viewWave.Enemies.TryGetValue(key, out var item) ? item.Enemy : null;
+
+    void UpdateEnemyDetail()
+    {
+        if (_viewWave is not { } wave) return;
+        var live = wave.Enemies.Values.Count(x => x.Present);
+        var died = wave.Enemies.Values.Count(x => x.Enemy.Hp == 0);
+        var count = _lastReadOk && _viewMatch == _history.Current && wave.Round == _viewMatch?.LastRound && !(_viewMatch?.SawEnd ?? false) ? $"在场 {live} · " : "";
+        _enemyInfo.Text = $"{count}本波已记录 {wave.Enemies.Count} 个实例 · 观测到归零 {died} · {wave.ReadAt:HH:mm:ss}";
+        if (SelectedEnemy() is { } enemy && _catalog.EnemyBase?.GetValueOrDefault(enemy.Id) is { } b)
+            _enemyInfo.Text += $"\n{enemy.Name}｜实测相对赛季基准：{Display.Measured(enemy, b)}";
+        else if (wave.EnemyNote != null) _enemyInfo.Text += "\n" + wave.EnemyNote;
+    }
+
+    void RefreshPickers()
+    {
+        var match = (_matchChoice.SelectedItem as MatchChoice)?.Id;
+        _changingPickers = true;
+        _matchChoice.BeginUpdate();
+        try
+        {
+            _matchChoice.Items.Clear();
+            _matchChoice.Items.Add(new MatchChoice(null, "实时 / 最近一次读取"));
+            foreach (var m in _history.Matches) _matchChoice.Items.Add(new MatchChoice(m.Id, $"{m.StartedAt:MM-dd HH:mm:ss} · {m.Mode} · {m.LastRound} 波"));
+            var i = _matchChoice.Items.Cast<MatchChoice>().ToList().FindIndex(x => x.Id == match);
+            _matchChoice.SelectedIndex = Math.Max(0, i);
+        }
+        finally { _matchChoice.EndUpdate(); _changingPickers = false; }
+        UpdateWavePicker(reset: false);
+    }
+
+    MatchRecord? PickMatch()
+    {
+        var id = (_matchChoice.SelectedItem as MatchChoice)?.Id;
+        return id is { } value ? _history.Matches.FirstOrDefault(m => m.Id == value) : _history.Current ?? _history.Matches.FirstOrDefault();
+    }
+
+    void UpdateWavePicker(bool reset)
+    {
+        var match = PickMatch();
+        var historical = (_matchChoice.SelectedItem as MatchChoice)?.Id != null;
+        var round = !reset ? (_waveChoice.SelectedItem as WaveChoice)?.Round : null;
+        _changingPickers = true;
+        _waveChoice.BeginUpdate();
+        try
+        {
+            _waveChoice.Items.Clear();
+            if (match != null)
+            {
+                foreach (var wave in match.Waves.Values) _waveChoice.Items.Add(new WaveChoice(wave.Round));
+                var choice = historical ? round ?? match.LastRound : match.LastRound;
+                var i = _waveChoice.Items.Cast<WaveChoice>().ToList().FindIndex(x => x.Round == choice);
+                _waveChoice.SelectedIndex = i < 0 ? _waveChoice.Items.Count - 1 : i;
+            }
+            _waveChoice.Enabled = historical && _waveChoice.Items.Count > 0;
+        }
+        finally { _waveChoice.EndUpdate(); _changingPickers = false; }
+    }
+
+    void RenderView()
+    {
+        var match = PickMatch();
+        var historical = (_matchChoice.SelectedItem as MatchChoice)?.Id != null;
+        var round = historical ? (_waveChoice.SelectedItem as WaveChoice)?.Round : match?.LastRound;
+        var wave = round is { } r ? match?.Waves.GetValueOrDefault(r) : null;
+        _viewMatch = match;
+        _viewWave = wave;
+        _save.Enabled = wave != null;
+        if (_history.StorageNote is { } storage) _foot.Text = storage;
+        if (match == null || wave == null) { _summary.Text = "暂无记录"; return; }
+
+        var mode = historical ? "历史" : _lastReadOk && !match.SawEnd ? "实时" : "留存";
+        _summary.Text = $"{mode} · {match.Mode} · 第 {wave.Round} 波" + (wave.Phase == null ? "" : $" · {wave.Phase}");
+        ReplaceRows(_enemies, wave.Enemies.Select(kv =>
+        {
+            var x = kv.Value; var e = x.Enemy;
+            var state = x.Enemy.Hp == 0 ? x.Status : mode == "历史" || !_lastReadOk ? (x.Present ? "最后记录" : x.Status) : x.Status;
+            return (kv.Key, new object?[] { e.Name, state, e.Hp, e.MaxHp, e.Attack, e.Defense, e.Resistance, e.AttackSpeed, e.Id });
+        }));
+        var effectIds = wave.Effects.Select(x => x.Id).Concat(wave.EffectFrames.SelectMany(f => f.Effects.Select(x => x.Id))).Distinct().ToArray();
+        ReplaceRows(_effects, effectIds.Select(id =>
+        {
+            var current = wave.Effects.Where(e => e.Id == id).Select(e => e.Param).ToArray();
+            var latestNonEmpty = wave.EffectFrames.LastOrDefault(f => f.Effects.Any(e => e.Id == id));
+            var parameters = current.Length > 0 ? current : latestNonEmpty?.Effects.Where(e => e.Id == id).Select(e => e.Param).ToArray() ?? [];
+            var peak = Math.Max(current.Length, wave.EffectFrames.Select(f => f.Effects.Count(e => e.Id == id)).DefaultIfEmpty().Max());
+            var rounds = match.Waves.Values.Count(w => w.Round <= wave.Round && (w.Effects.Any(e => e.Id == id) || w.EffectFrames.Any(f => f.Effects.Any(e => e.Id == id))));
+            var info = _catalog.Effects.GetValueOrDefault(id);
+            return (id, new object?[] { info?.Name ?? id, info == null ? null : Display.Describe(info.Rules), current.Length, peak, rounds, string.Join(", ", parameters), id });
+        }));
+        ReplaceRows(_allies, wave.AllySegments.SelectMany(seg => seg.Value.Allies.Select(kv =>
+        {
+            var a = kv.Value;
+            var s = seg.Value.CombatSeconds;
+            return ($"{seg.Key}:{kv.Key}", new object?[] { a.Name, $"{seg.Value.Phase} · {seg.Key}", a.Damage, s > 0 ? a.Damage / s : null, a.Healing, s, a.Id });
+        })));
+        _allyInfo.Text = wave.AllySegments.Count == 0 ? wave.AllyNote ?? "这波还没有干员战报（早期版本的历史不含此数据）。" :
+            "阶段平均 DPS = 该段累计输出 ÷ 游戏计时。同一干员 ID 按游戏战报合并。\n治疗是游戏记账量，不保证排除溢出。" + (wave.AllyNote == null ? "" : " " + wave.AllyNote);
+        UpdateEnemyDetail();
+        UpdateEffectDetail();
+    }
+
+    sealed record MatchChoice(Guid? Id, string Text) { public override string ToString() => Text; }
+    sealed record WaveChoice(int Round) { public override string ToString() => $"第 {Round} 波"; }
+
+    static Button Button(string text, bool primary = false)
+    {
+        var b = new Button { Text = text, AutoSize = true, FlatStyle = FlatStyle.Flat, ForeColor = primary ? Background : TextColor,
+            BackColor = primary ? Accent : Raised, Padding = new Padding(12, 2, 12, 2), Margin = new Padding(0, 0, 9, 0), Height = 34 };
+        b.FlatAppearance.BorderColor = primary ? Accent : Edge;
+        return b;
+    }
+
+    static Label Label(string text, Color color, float size, FontStyle style) => new() { Text = text, AutoSize = true, ForeColor = color, Font = new Font("Microsoft YaHei UI", size, style) };
+    static void StyleLabel(Label label, Color color) { label.Dock = DockStyle.Fill; label.ForeColor = color; label.TextAlign = ContentAlignment.MiddleLeft; label.AutoEllipsis = true; }
+    static void AddGridPanel(TabPage tab, TableGrid grid, Label detail, int height)
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = Surface };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        layout.Controls.Add(grid, 0, 0);
+        StyleLabel(detail, Muted);
+        layout.Controls.Add(detail, 0, 1);
+        tab.Controls.Add(layout);
+    }
+
+    static void SetupGrid(TableGrid grid, params (string Id, string Title, int Width)[] cols)
+    {
+        grid.Dock = DockStyle.Fill;
+        grid.BackgroundColor = Surface;
+        grid.GridColor = Edge;
+        grid.BorderStyle = BorderStyle.None;
+        grid.EnableHeadersVisualStyles = false;
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Raised, ForeColor = TextColor, SelectionBackColor = Raised, SelectionForeColor = TextColor };
+        grid.DefaultCellStyle = new DataGridViewCellStyle { BackColor = Surface, ForeColor = TextColor, SelectionBackColor = Color.FromArgb(41, 72, 68), SelectionForeColor = TextColor, NullValue = "—" };
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(27, 36, 40);
+        grid.AllowUserToAddRows = false;
+        grid.AllowUserToDeleteRows = false;
+        grid.AllowUserToResizeRows = false;
+        grid.ColumnHeadersHeight = 32;
+        grid.RowTemplate.Height = 31;
+        grid.RowHeadersVisible = false;
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        grid.MultiSelect = false;
+        grid.ReadOnly = true;
+        foreach (var c in cols)
+        {
+            var numeric = TableGrid.IsNumeric(c.Id);
+            var column = new DataGridViewTextBoxColumn { Name = c.Id, HeaderText = c.Title, Width = c.Width, SortMode = DataGridViewColumnSortMode.Programmatic };
+            if (numeric) { column.DefaultCellStyle.Format = "#,0.##"; column.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight; }
+            grid.Columns.Add(column);
+        }
+        grid.Columns[0].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        grid.Columns[0].MinimumWidth = cols[0].Width;
+    }
+
+    static void ReplaceRows(TableGrid grid, IEnumerable<(string Key, object?[] Cells)> items)
+    {
+        var data = items.ToArray();
+        var wanted = data.Select(x => x.Key).ToHashSet();
+        var resort = false;
+        for (var i = grid.Rows.Count - 1; i >= 0; i--)
+            if (grid.Rows[i].Tag is not string key || !wanted.Contains(key)) { grid.Rows.RemoveAt(i); resort = true; }
+        var old = grid.Rows.Cast<DataGridViewRow>().Where(r => r.Tag is string).ToDictionary(r => (string)r.Tag!);
+        foreach (var (key, cells) in data)
+        {
+            if (!old.TryGetValue(key, out var row)) { grid.Rows[grid.Rows.Add(cells)].Tag = key; resort = true; continue; }
+            for (var i = 0; i < cells.Length; i++) if (!Equals(row.Cells[i].Value, cells[i]))
+            {
+                row.Cells[i].Value = cells[i];
+                if (i == grid.SortIndex) resort = true;
+            }
+        }
+        if (resort) grid.ApplySort();
+    }
+
+    sealed class TableGrid : DataGridView
+    {
+        public int SortIndex { get; private set; } = -1;
+        bool _descending;
+        public TableGrid() => DoubleBuffered = true;
+        public static bool IsNumeric(string key) => key is "hp" or "maxHp" or "attack" or "defense" or "res" or "aspd" or "copies" or "peak" or "rounds" or "damage" or "dps" or "heal" or "seconds";
+        protected override void OnColumnHeaderMouseClick(DataGridViewCellMouseEventArgs e)
+        {
+            base.OnColumnHeaderMouseClick(e);
+            if (e.Button != MouseButtons.Left || e.ColumnIndex < 0) return;
+            _descending = SortIndex == e.ColumnIndex ? !_descending : IsNumeric(Columns[e.ColumnIndex].Name);
+            if (SortIndex >= 0) Columns[SortIndex].HeaderCell.SortGlyphDirection = SortOrder.None;
+            SortIndex = e.ColumnIndex;
+            Columns[SortIndex].HeaderCell.SortGlyphDirection = _descending ? SortOrder.Descending : SortOrder.Ascending;
+            ApplySort();
+        }
+        public void ApplySort() { if (SortIndex >= 0 && Rows.Count > 1) Sort(new RowComparer(SortIndex, _descending)); }
+        sealed class RowComparer(int column, bool descending) : IComparer
+        {
+            static readonly CompareInfo Chinese = CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
+            public int Compare(object? x, object? y)
+            {
+                if (x is not DataGridViewRow a || y is not DataGridViewRow b) return 0;
+                var v = a.Cells[column].Value; var w = b.Cells[column].Value;
+                if (v == null && w != null) return 1;
+                if (v != null && w == null) return -1;
+                var cmp = v switch
+                {
+                    double d when w is double e => d.CompareTo(e),
+                    int i when w is int j => i.CompareTo(j),
+                    _ => Chinese.Compare(v?.ToString(), w?.ToString(), CompareOptions.IgnoreCase)
+                };
+                return cmp == 0 ? string.CompareOrdinal(a.Tag as string, b.Tag as string) : (descending ? -cmp : cmp);
+            }
+        }
+    }
+}
